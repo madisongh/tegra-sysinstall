@@ -1,0 +1,11 @@
+#!/bin/bash
+#
+# tegra-sysinstall-menu
+#
+# Menu-driven installer
+#
+# Copyright (c) 2019, 2020 Matthew Madison
+
+. @datadir@/tegra-sysinstall/menu-common
+
+main_menu
