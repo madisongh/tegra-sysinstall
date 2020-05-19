@@ -6,7 +6,6 @@
 #
 # Copyright (c) 2019, 2020 Matthew Madison
 
-INITIAL_SETUP=yes
 BOOTLOADER_UPDATES_SUPPORTED=yes
 INSTDIRTOP="/data"
 [ -d "$INSTDIRTOP" ] || mkdir -p "$INSTDIRTOP"
@@ -18,31 +17,69 @@ cleanup_and_exit() {
 	rm -rf "$INSTDIR"
     fi
     unmount_storage_partitions
-    exit $1
+    [ -z "$1" ] || exit $1
 }
 
-if [ -z "$1" ]; then
-	echo "Missing URL argument for rootfs"
-	exit 1
+usage() {
+    cat <<EOF
+Usage: `basename "$0"` [OPTION]... [ROOTFS-URI] [DATA-URI]
+Set up filesystems and install a production OS.
+
+Parameters:
+  ROOTFS-URI        location of rootfs tarball
+                    (default: /installer/image.tar.gz)
+  DATA-URI          location of data partition tarball
+                    (default: /installer/data.tar.gz, optional)
+
+Options:
+  -h, --help        displays this usage information
+
+EOF
+}
+
+ARGS=$(getopt -n $(basename "$0") -l "help" -o "h" -- "$@")
+if [ $? -ne 0 ]; then
+    echo "Error parsing command line" >&2
+    exit 1
 fi
-URL="$1"
+eval set -- "$ARGS"
+
+while true; do
+    case "$1" in
+	--help|-h)
+	    usage
+	    exit 0
+	    ;;
+	--)
+	    shift
+	    break
+	    ;;
+	*)
+	    echo "Error processing command line" >&2
+	    usage
+	    exit 1
+	    ;;
+    esac
+done
+
+set_url URL "$1" "file:///installer/image.tar.gz" || exit 1
+set_url DATA_URL "$2" "file:///installer/data.tar.gz" optional || exit 1
 
 verify_device_availability || exit 1
 
-initialize_devices || exit 1
-
-format_partitions || exit 1
-
-mount_storage_partitions || exit 1
-
-program_machine_id || exit 1
+if [ "$INITIAL_SETUP" = "yes" ]; then
+    initialize_devices || exit 1
+    format_partitions || exit 1
+    mount_storage_partitions || exit 1
+    program_machine_id || exit 1
+fi
 
 # From here down, make sure we clean up before exiting.
 
 INSTDIR=$(mktemp -q -d "$INSTDIRTOP/fwsetup.XXXXXX")
 download_file "$URL" "$INSTDIR" ROOTFS_TARBALL || cleanup_and_exit 1
-if [ -n "$2" ]; then
-    download_file "$2" "$INSTDIR" DATA_TARBALL || cleanup_and_exit 1
+if [ -n "$DATA_URL" ]; then
+    download_file "$DATA_URL" "$INSTDIR" DATA_TARBALL || cleanup_and_exit 1
 else
     DATA_TARBALL=
 fi
@@ -54,6 +91,7 @@ if [ -n "$DATA_TARBALL" ]; then
     update_datapart /data "$INSTDIR/$DATA_TARBALL" || cleanup_and_exit 1
 fi
 
+INSTALLED_ARTIFACT=
 first_targetdev=
 for i in $INSTALLTO; do
     targetdev="/dev/${ROOTFSDEV[$i]}${ROOTFSPART[$i]}"
@@ -64,19 +102,20 @@ for i in $INSTALLTO; do
     [ -n "$first_targetdev" ] || first_targetdev="$targetdev"
 done
 
-if [ "$BOOTLOADER_UPDATES_SUPPORTED" = "yes" -a -n "$first_targetdev" ]; then
-    tmpmnt=$(mktemp -q -d /tmp/bl.XXXXXX)
-    if ! mount $first_targetdev $tmpmnt 2>/dev/null; then
-	echo "ERR: could not mount rootfs for bootloader update check" >&2
+if [ -n "$first_targetdev" ]; then
+    rmount=$(mktemp -q -d /tmp/finalstaging.root.XXXXXX)
+    if ! mount "$first_targetdev" "$rmount" 2>/dev/null; then
+	echo "ERR: could not mount rootfs for post-install operations" >&2
 	cleanup_and_exit 1
     fi
-    if [ -e $tmpmnt/opt/ota_package/bl_update_payload ]; then
+fi
+
+if [ "$BOOTLOADER_UPDATES_SUPPORTED" = "yes" -a -n "$first_targetdev" ]; then
+    if [ -e $rmount/opt/ota_package/bl_update_payload ]; then
 	bootloadertext="${BOOTLOADER_NAME:-bootloader}"
 	echo "Updating $bootloadertext..."
-	update_bootloader $tmpmnt || cleanup_and_exit 1
+	update_bootloader $rmount || cleanup_and_exit 1
     fi
-    umount $tmpmnt
-    rmdir $tmpmnt 2>/dev/null
 fi
 
 # Final staging:
@@ -85,14 +124,10 @@ fi
 dmount=$(mktemp -q -d /tmp/dstage.XXXXXX)
 if mount -L DATA $dmount 2>/dev/null ; then
     if [ -n "$first_targetdev" ]; then
-	rmount=$(mktemp -q -d /tmp/dstage2.XXXXXX)
-	mount "$first_targetdev" $rmount
 	if [ -d ${rmount}/var/lib ]; then
 	    [ -d ${dmount}/var ] || mkdir ${dmount}/var
 	    cp -a ${rmount}/var/lib ${dmount}/var/
 	fi
-	umount $rmount
-	rmdir $rmount 2>/dev/null
     fi
     [ -d ${dmount}/var/lib ] || mkdir -p ${dmount}/var/lib
     /bin/date -u "+%4Y%2m%2d%2H%2M%2S" > ${dmount}/var/lib/timestamp
@@ -103,7 +138,14 @@ else
     cleanup_and_exit 1
 fi
 
-echo "Installation complete.  Removing INSTALLER partition and rebooting..."
-remove_installer_partition
+if [ -n "$INSTALLED_ARTIFACT" ]; then
+    echo "PASS: successful installation of $INSTALLED_ARTIFACT"
+else
+    echo "PASS: successful installation"
+fi
 
-cleanup_and_exit 0
+cleanup_and_exit
+if [ "$INITIAL_SETUP" = "yes" ]; then
+    echo "Installation complete.  Removing INSTALLER partition and rebooting..."
+    remove_installer_partition
+fi

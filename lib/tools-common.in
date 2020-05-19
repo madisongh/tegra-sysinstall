@@ -46,14 +46,6 @@ identify_platform_setup() {
 	    exit 1
 	fi
     fi
-    if [ "$INITIAL_SETUP" = "yes" ]; then
-	INSTALLTO="0 1"
-    elif [ "$curslot" != "0" -a "$curslot" != "1" ]; then
-	echo "ERR: could not identify installation partition" >&2
-	exit 1
-    else
-	INSTALLTO=$(expr 1 - $curslot)
-    fi
 
     while read -a ARGS; do
 	eval ${ARGS[@]}
@@ -90,9 +82,21 @@ identify_platform_setup() {
 		ROOTFSPART[1]="${NAME#${PKNAME}}"
 	    elif [ "$PARTLABEL" = "UDA" -o "$PARTLABEL" = "DATA" ]; then
 		DATAPART="${NAME#${PKNAME}}"
+	    elif [ "$PARTLABEL" = "INSTALLER" ]; then
+		INITIAL_SETUP=yes
 	    fi
 	fi
     done < <(lsblk -P -o MOUNTPOINT,NAME,PKNAME,PARTLABEL,TYPE)
+
+    if [ "$INITIAL_SETUP" = "yes" ]; then
+	INSTALLTO="0 1"
+    elif [ "$curslot" != "0" -a "$curslot" != "1" ]; then
+	echo "ERR: could not identify installation partition" >&2
+	exit 1
+    else
+	INSTALLTO=$(expr 1 - $curslot)
+    fi
+
     if [ "$DATAPART" = "TBD" -a "$INITIAL_SETUP" != "yes" ]; then
 	echo "ERR: no DATA partition found" >&2
 	exit 1
@@ -238,6 +242,13 @@ install_rootfs() {
         rc=1
     fi
     sync
+    if [ -z "$INSTALLED_ARTIFACT" ]; then
+	if [ -e $mptemp/etc/mender/artifact_info ]; then
+	    INSTALLED_ARTIFACT=`cut -d= -f2 $mptemp/etc/mender/artifact_info`
+	else
+	    INSTALLED_ARTIFACT=$(. $mptemp/etc/os-release 2>/dev/null; echo $PRETTY_NAME)
+	fi
+    fi
     for i in 1 2 3; do
 	if umount $mptemp 2>/dev/null; then
 	    rmdir $mptemp
@@ -410,17 +421,46 @@ update_bootloader() {
     local fs rc d
     local mounts=(/dev /sys /run /usr/bin /usr/lib /lib)
 
+    rc=0
     if [ "$INITIAL_SETUP" = "yes" ]; then
-	if ! tegra-bootloader-update --initialize "$1/opt/ota_package/bl_update_payload"; then
-	    return 1
+	if [ -e "$1/etc/nv_boot_control.template" ]; then
+	    tmpconf=`mktemp /tmp/bootctrl.XXXXXX`
+	    local boardspec=$(tegra-boardspec 2>/dev/null)
+	    local devtype=$(cat "$1/etc/hostname")
+	    if [ -z "$boardspec" ]; then
+		echo "ERR: cannot retrieve boardspec for nv_boot_control.conf generation" >&2
+		return 1
+	    fi
+	    sed -e"s,@TNSPEC@,${boardspec}-${devtype}-mmcblk0p1," $1/etc/nv_boot_control.template > "$tmpconf"
+	    export NV_BOOT_CONTROL="$tmpconf"
+	elif [ -e "$1/etc/nv_boot_control.conf" ]; then
+	    export NV_BOOT_CONTROL="$1/etc/nv_boot_control.conf"
 	fi
-	return 0
+	if ! tegra-bootloader-update --initialize "$1/opt/ota_package/bl_update_payload"; then
+	    rc=1
+	fi
+	unset NV_BOOT_CONTROL
+	[ -z "$tmpconf" ] || rm -f "$tmpconf"
+	return $rc
+    else
+	if mountpoint -q /var/lib; then
+	    mounts[${#mounts[@]}]="/var/lib"
+	else
+	    local boardspec=$(tegra-boardspec 2>/dev/null)
+	    local devtype=$(cat "$1/etc/hostname")
+	    local dest=$(readlink -f "$1/etc/nv_boot_control.conf" 2>/dev/null)
+	    if [ -z "$boardspec" ]; then
+		echo "ERR: cannot retrieve boardspec for nv_boot_control.conf generation" >&2
+		return 1
+	    fi
+	    [ -n "$dest" ] || dest="/etc/nv_boot_control.conf"
+	    sed -e"s,@TNSPEC@,${boardspec}-${devtype}-mmcblk0p1," $1/etc/nv_boot_control.template > "${1}${dest}"
+	fi
     fi
     mount -t proc proc "$1/proc"
     for fs in ${mounts[@]}; do
 	mount --bind $fs "$1$fs"
     done
-    rc=0
     if ! chroot "$1" /usr/sbin/nv_update_engine --install no-reboot 2>&1 >"$updlog"; then
 	echo "ERR: nv_update_engine failed, log follows:" >&2
 	cat "$updlog" >&2
@@ -716,5 +756,51 @@ install_machine_id() {
     rm -f "$midtmp"
     umount "$mptemp"
     rmdir "$mptemp"
+    return 0
+}
+
+# set_url
+#
+# Validate a URL for accessibility
+#
+set_url() {
+    local varname="$1"
+    local value="$2"
+    local default="$3"
+    local disposition="${4:required}"
+    local rc=0
+
+    eval $varname=""
+
+    if [ -z "$value" ]; then
+	if [ -n "$default" ]; then
+	    value="$default"
+	else
+	    if [ "$dispostion" = "required" ]; then
+		echo "ERR: missing required parameter $varname" >&2
+		return 1
+	    fi
+	fi
+    fi
+    [ -n "$value" ] || return 0
+
+    if [ "${value:0:7}" = "file://" ]; then
+	value="${value:7}"
+    fi
+    if ! echo "$value" | grep -q "://"; then
+	if [ ! -e "$value" ]; then
+	    rc=1
+	fi
+    elif ! curl --output /dev/null --silent --fail -r 0-0 "$value"; then
+	rc=$?
+    fi
+    if [ $rc -ne 0 ]; then
+	if [ "$disposition" = "required" ]; then
+	    echo "$value: invalid or not found" >&2
+	    return 1
+	fi
+	value=
+    fi
+    eval $varname="$value"
     return 0
 }
