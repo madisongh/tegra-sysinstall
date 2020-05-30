@@ -172,6 +172,44 @@ download_file() {
     return 0
 }
 
+# resize_gpt
+#
+# Adjust the GPT to hold the standard number
+# of entries, when it's the standard length
+# (33 sectors).
+#
+resize_gpt() {
+    local rootfsdev="$1"
+    local npvar="$2"
+    local ptsize=`sgdisk $rootfsdev --print | grep '^Partition table holds' | cut -d' ' -f6`
+
+    ptsize=$(expr $ptsize + 0 2>/dev/null)
+    if [ -n "$ptsize" ]; then
+	if [ $ptsize -lt 128 ]; then
+	    local firstsect=`sgdisk $rootfsdev --print | grep '^First usable sector' | sed -e's!.*sector is \([0-9]*\),.*$!\1!'`
+	    if [ -n "$firstsect" ]; then
+		if [ $firstsect -ge 34 -a $firstsect -le 40 ] ; then
+		    echo -n "Resizing GPT..."
+		    if ! sgdisk $rootfsdev --resize-table=128 >/dev/null 2>&1; then
+			echo "ERR: could not resize GPT" >&2
+			return 1
+		    fi
+		    echo "[OK]"
+		    eval $npvar="yes"
+		else
+		    echo "Skipping GPT resizing: PPTSIZE at flash time was not 16896"
+		fi
+	    else
+		echo "WARN: could not determine first usable sector" >&2
+	    fi
+	fi
+    else
+	echo "ERR: could not determine partition table size" >&2
+	return 1
+    fi
+    return 0
+}
+
 # package_preinstall
 #
 # Preinstallation checks.
@@ -193,24 +231,7 @@ package_preinstall() {
 	fi
 	needprobe="yes"
     fi
-    #
-    # Normalize the GPT size.
-    #
-    local ptsize=`sgdisk $rootfsdev --print | grep '^Partition table holds' | cut -d' ' -f6`
-    ptsize=$(expr $ptsize + 0 2>/dev/null)
-    if [ -n "$ptsize" ]; then
-	if [ $ptsize -lt 128 ]; then
-	    echo "[Skipping GPT resizing due to NVIDIA bootloader bug]"
-	    #if ! sgdisk $rootfsdev --resize-table=128 >/dev/null 2>&1; then
-	    #    echo "ERR: could not resize GPT" >&2
-	    #    return 1
-	    #fi
-	    #needprobe="yes"
-	fi
-    else
-	echo "ERR: could not determine partition table size" >&2
-	return 1
-    fi
+    resize_gpt "$rootfsdev" needprobe || return 1
 
     if [ "$needprobe" = "yes" ]; then
 	reprobe_rootfsdev
@@ -526,13 +547,12 @@ make_fake_parttable() {
 # flash tools.
 initialize_devices() {
     local rootfsdev="/dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM"
-    local part
+    local part needprobe
 
     if [ "$INSTALLTO" = "0 1" -a -s "@datadir@/tegra-sysinstall/partition_table" ]; then
 	echo "ERROR: repartitioning of the eMMC is not supported" >&2
     fi
 
-    local needprobe
     #
     # Delete the extra partition created at flash time.
     #
@@ -546,27 +566,7 @@ initialize_devices() {
 	needprobe="yes"
 	echo "[OK]"
     fi
-    #
-    # Normalize the GPT size.
-    #
-    local ptsize=`sgdisk $rootfsdev --print | grep '^Partition table holds' | cut -d' ' -f6`
-    ptsize=$(expr $ptsize + 0 2>/dev/null)
-    if [ -n "$ptsize" ]; then
-	if [ $ptsize -lt 128 ]; then
-	    echo "[Skipping GPT resizing due to NVIDIA bootloader bug]"
-	    #echo -n "Resizing GPT..."
-	    #if ! sgdisk $rootfsdev --resize-table=128 >/dev/null 2>&1; then
-	    #    echo "[FAIL]"
-	    #    echo "ERR: could not resize GPT" >&2
-	    #    return 1
-	    #fi
-	    #needprobe="yes"
-	    #echo "[OK]"
-	fi
-    else
-	echo "ERR: could not determine partition table size" >&2
-	return 1
-    fi
+    resize_gpt "$rootfsdev" needprobe || return 1
 
     if [ "$needprobe" = "yes" ]; then
 	reprobe_rootfsdev
