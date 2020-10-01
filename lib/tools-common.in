@@ -4,7 +4,7 @@
 
 declare -A EMMC_PARTITIONS CRYPT_PARTITIONS MKFS_ARGS PARTINDEX
 
-PARTITIONS_TO_FORMAT=(DATA)
+PARTITIONS_TO_FORMAT=(DATA EXTRA LOGS)
 MKFS_ARGS[DATA]="-i 4096"
 
 ROOTFSLABEL=(APP APP_b)
@@ -62,6 +62,13 @@ identify_platform_setup() {
 		    ROOTFSPART[1]="$NAME"
 		    ;;
 		DATA)
+		    # Use EXTRA if it is present
+		    if [ "$DATAPART" = "TBD" ]; then
+			DATADEV="mapper/"
+			DATAPART="$NAME"
+		    fi
+		    ;;
+		EXTRA)
 		    DATADEV="mapper/"
 		    DATAPART="$NAME"
 		    ;;
@@ -80,7 +87,9 @@ identify_platform_setup() {
 		ROOTFSPART[0]="${NAME#${PKNAME}}"
 	    elif [ "$PARTLABEL" = "APP_b" ]; then
 		ROOTFSPART[1]="${NAME#${PKNAME}}"
-	    elif [ "$PARTLABEL" = "UDA" -o "$PARTLABEL" = "DATA" ]; then
+	    elif [ "$PARTLABEL" = "EXTRA" ]; then
+		DATAPART="${NAME#${PKNAME}}"
+	    elif [ "$PARTLABEL" = "UDA" -o "$PARTLABEL" = "DATA" -a "$DATAPART" = "TBD" ]; then
 		DATAPART="${NAME#${PKNAME}}"
 	    elif [ "$PARTLABEL" = "INSTALLER" ]; then
 		INITIAL_SETUP=yes
@@ -261,6 +270,10 @@ install_rootfs() {
     if ! tar -C $mptemp --xattrs --xattrs-include="*" --warning=no-timestamp -x -f "$tarball"; then
         echo "ERR: rootfs installation failed" >&2
         rc=1
+    fi
+    # Overwrite /etc/timestamp with actual install time
+    if [ -e ${rmount}/etc/timestamp ]; then
+        /bin/date -u "+%4Y%2m%2d%2H%2M%2S" > $mptemp/etc/timestamp
     fi
     sync
     if [ -z "$INSTALLED_ARTIFACT" ]; then
@@ -669,14 +682,14 @@ format_partitions() {
 # /data partition
 #
 mount_storage_partitions() {
-    mount /dev/$DATADEV$DATAPART /data
+    mount /dev/$DATADEV$DATAPART $INSTDIRTOP
 
 }
 
 # unmount_storage_partitions
 #
 unmount_storage_partitions() {
-    umount /data 2>/dev/null
+    umount $INSTDIRTOP 2>/dev/null
     return 0
 }
 

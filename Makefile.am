@@ -15,7 +15,7 @@ sbindir = $(exec_prefix)/sbin
 
 toolsdir = $(datadir)/tegra-sysinstall
 
-EXTRA_DIST = src/tegra-sysinstall.in src/tegra-sysinstall-menu.in \
+EXTRA_DIST = README.md LICENSE src/tegra-sysinstall.in src/tegra-sysinstall-menu.in \
 		lib/tools-common.in lib/menu-common.in
 
 tools_DATA = lib/tools-common lib/menu-common

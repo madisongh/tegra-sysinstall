@@ -7,8 +7,16 @@
 # Copyright (c) 2019, 2020 Matthew Madison
 
 BOOTLOADER_UPDATES_SUPPORTED=yes
-INSTDIRTOP="/data"
-[ -d "$INSTDIRTOP" ] || mkdir -p "$INSTDIRTOP"
+if [ -d "/var/extra" ]; then
+    INSTDIRTOP="/var/extra"
+    INSTPART=EXTRA
+elif [ -d "/data" ]; then
+    INSTDIRTOP="/data"
+    INSTPART=DATA
+else
+    echo "ERR: no /var/extra or /data directory found" >&2
+    exit 1
+fi
 
 . @datadir@/tegra-sysinstall/tools-common
 
@@ -102,40 +110,18 @@ for i in $INSTALLTO; do
     [ -n "$first_targetdev" ] || first_targetdev="$targetdev"
 done
 
-if [ -n "$first_targetdev" ]; then
+if [ "$BOOTLOADER_UPDATES_SUPPORTED" = "yes" -a -n "$first_targetdev" ]; then
     rmount=$(mktemp -q -d /tmp/finalstaging.root.XXXXXX)
     if ! mount "$first_targetdev" "$rmount" 2>/dev/null; then
 	echo "ERR: could not mount rootfs for post-install operations" >&2
 	cleanup_and_exit 1
     fi
-fi
-
-if [ "$BOOTLOADER_UPDATES_SUPPORTED" = "yes" -a -n "$first_targetdev" ]; then
     if [ -e $rmount/opt/ota_package/bl_update_payload ]; then
 	bootloadertext="${BOOTLOADER_NAME:-bootloader}"
 	echo "Updating $bootloadertext..."
 	update_bootloader $rmount || cleanup_and_exit 1
     fi
-fi
-
-# Final staging:
-#   - populate /data/var/lib with copy from rootfs
-#   - timestamp into /data/var/lib/timestamp
-dmount=$(mktemp -q -d /tmp/dstage.XXXXXX)
-if mount -L DATA $dmount 2>/dev/null ; then
-    if [ -n "$first_targetdev" ]; then
-	if [ -d ${rmount}/var/lib ]; then
-	    [ -d ${dmount}/var ] || mkdir ${dmount}/var
-	    cp -a ${rmount}/var/lib ${dmount}/var/
-	fi
-    fi
-    [ -d ${dmount}/var/lib ] || mkdir -p ${dmount}/var/lib
-    /bin/date -u "+%4Y%2m%2d%2H%2M%2S" > ${dmount}/var/lib/timestamp
-    umount $dmount
-    rmdir $dmount 2>/dev/null
-else
-    echo "ERR: could not mount /data partition for final staging" >&2
-    cleanup_and_exit 1
+    umount $rmount
 fi
 
 if [ -n "$INSTALLED_ARTIFACT" ]; then
