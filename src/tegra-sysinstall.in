@@ -24,7 +24,7 @@ cleanup_and_exit() {
     if [ -n "$INSTDIR" -a -d "$INSTDIR" ]; then
 	rm -rf "$INSTDIR"
     fi
-    unmount_storage_partitions
+    [ "$INITIAL_SETUP" != "yes" ] || unmount_storage_partitions
     [ -z "$1" ] || exit $1
 }
 

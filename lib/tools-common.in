@@ -679,17 +679,27 @@ format_partitions() {
 
 # mount_storage_partitions
 #
-# /data partition
+# * partition where installer files are stored
+# * /data partition (if installer files are stored on different partition)
 #
 mount_storage_partitions() {
-    mount /dev/$DATADEV$DATAPART $INSTDIRTOP
-
+    mount /dev/$DATADEV$DATAPART $INSTDIRTOP || return 1
+    if [ "$INSTDIRTOP" != "/data" -a -d /data ]; then
+	local datapart="${EMMC_PARTITIONS[DATA]}"
+	if [ -n "$datapart" ]; then
+	    mount /dev/$datapart /data || return 1
+	fi
+    fi
+    return 0
 }
 
 # unmount_storage_partitions
 #
 unmount_storage_partitions() {
     umount $INSTDIRTOP 2>/dev/null
+    if [ "$INSTDIRTOP" != "/data" ] && mountpoint -q /data; then
+	umount /data 2>/dev/null
+    fi
     return 0
 }
 
