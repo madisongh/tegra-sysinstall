@@ -756,6 +756,11 @@ program_machine_id() {
 install_machine_id() {
     local mptemp=`mktemp -q -d /tmp/mid-rootfs.XXXXXX`
     local midtmp=`mktemp -q  /tmp/mid.XXXXXX`
+    # Skip this if the machine ID is being passed through from
+    # the bootloader
+    if cat /proc/cmdline | grep -q 'systemd\.machine_id='; then
+	return 0
+    fi
     mount "$1" "$mptemp" || return 1
     if tegra-fuse-tool -m > "$midtmp" 2>/dev/null; then
 	if [ -e "$mptemp/etc/machine-id" ]; then
