@@ -1,6 +1,6 @@
 #!/bin/bash
 # Common functions for tegra installer scripts
-# Copyright (c) 2019, Matthew Madison
+# Copyright (c) 2019-2020, Matthew Madison
 
 declare -A EMMC_PARTITIONS CRYPT_PARTITIONS MKFS_ARGS PARTINDEX
 
@@ -29,8 +29,7 @@ identify_platform_setup() {
     local diskdev_candidate
     local -a ARGS
     local found_rootfs
-    local numslots=`nvbootctrl get-number-slots`
-    local curslot=`nvbootctrl get-current-slot`
+    local curslot=$(tegra-boot-control --current-slot 2>/dev/null)
     local rootfsdev="$ROOTFSDEVTYPE$ROOTFSDEVNUM"
     DATAPART="TBD"
     DISKDEV=
@@ -39,13 +38,6 @@ identify_platform_setup() {
     EMMC_PARTITIONS=()
     CRYPT_PARTITIONS=()
     PARTINDEX=()
-
-    if [ "$numslots" != "2" ]; then
-	if ! nv_update_engine --enable-ab 2>&1 >/dev/null; then
-	    echo "ERR: could not enable redundant boot" >&2
-	    exit 1
-	fi
-    fi
 
     while read -a ARGS; do
 	eval ${ARGS[@]}
@@ -447,63 +439,41 @@ secure_boot_enabled() {
 
 # update_bootloader [rootfs-mountpoint]
 #
-# For initial installs, use the tegra-boot-tools updater to
-# write the update to both slots.  Otherwise, use nv_update_engine.
+# Uses tegra-bootloader-update for all updates.
 #
 update_bootloader() {
     local updlog=`mktemp /tmp/bup.log.XXXXXX`
+    local tmpconf
     local fs rc d
     local mounts=(/dev /sys /run /usr/bin /usr/lib /lib)
 
     rc=0
+    if [ -e "$1/etc/nv_boot_control.template" ]; then
+	local boardspec=$(tegra-boardspec 2>/dev/null)
+	local devtype=$(cat "$1/usr/share/tegra-boot-tools/machine-name.conf")
+	tmpconf=$(mktemp /tmp/bootctrl.XXXXXX)
+	if [ -z "$boardspec" ]; then
+	    echo "ERR: cannot retrieve boardspec for nv_boot_control.conf generation" >&2
+	    return 1
+	fi
+	[ -n "$devtype" ] || devtype=$(cat "$1/etc/hostname")
+	if [ -z "$devtype" ]; then
+	    echo "ERR: cannot retrieve machine name for nv_boot_control.conf generation" >&2
+	    return 1
+	fi
+	sed -e"s,@TNSPEC@,${boardspec}-${devtype}-mmcblk0p1," $1/etc/nv_boot_control.template > "$tmpconf"
+	export NV_BOOT_CONTROL="$tmpconf"
+    elif [ -e "$1/etc/nv_boot_control.conf" ]; then
+	export NV_BOOT_CONTROL="$1/etc/nv_boot_control.conf"
+    fi
     if [ "$INITIAL_SETUP" = "yes" ]; then
-	if [ -e "$1/etc/nv_boot_control.template" ]; then
-	    tmpconf=`mktemp /tmp/bootctrl.XXXXXX`
-	    local boardspec=$(tegra-boardspec 2>/dev/null)
-	    local devtype=$(cat "$1/etc/hostname")
-	    if [ -z "$boardspec" ]; then
-		echo "ERR: cannot retrieve boardspec for nv_boot_control.conf generation" >&2
-		return 1
-	    fi
-	    sed -e"s,@TNSPEC@,${boardspec}-${devtype}-mmcblk0p1," $1/etc/nv_boot_control.template > "$tmpconf"
-	    export NV_BOOT_CONTROL="$tmpconf"
-	elif [ -e "$1/etc/nv_boot_control.conf" ]; then
-	    export NV_BOOT_CONTROL="$1/etc/nv_boot_control.conf"
-	fi
-	if ! tegra-bootloader-update --initialize "$1/opt/ota_package/bl_update_payload"; then
-	    rc=1
-	fi
-	unset NV_BOOT_CONTROL
-	[ -z "$tmpconf" ] || rm -f "$tmpconf"
-	return $rc
+	tegra-bootloader-update --initialize "$1/opt/ota_package/bl_update_payload" || rc=1
     else
-	if mountpoint -q /var/lib; then
-	    mounts[${#mounts[@]}]="/var/lib"
-	else
-	    local boardspec=$(tegra-boardspec 2>/dev/null)
-	    local devtype=$(cat "$1/etc/hostname")
-	    local dest=$(readlink -f "$1/etc/nv_boot_control.conf" 2>/dev/null)
-	    if [ -z "$boardspec" ]; then
-		echo "ERR: cannot retrieve boardspec for nv_boot_control.conf generation" >&2
-		return 1
-	    fi
-	    [ -n "$dest" ] || dest="/etc/nv_boot_control.conf"
-	    sed -e"s,@TNSPEC@,${boardspec}-${devtype}-mmcblk0p1," $1/etc/nv_boot_control.template > "${1}${dest}"
-	fi
+	tegra-bootloader-update "$1/opt/ota_package/bl_update_payload" || rc=1
     fi
-    mount -t proc proc "$1/proc"
-    for fs in ${mounts[@]}; do
-	mount --bind $fs "$1$fs"
-    done
-    if ! chroot "$1" /usr/sbin/nv_update_engine --install no-reboot 2>&1 >"$updlog"; then
-	echo "ERR: nv_update_engine failed, log follows:" >&2
-	cat "$updlog" >&2
-	rc=1
-    fi
-    for fs in ${mounts[@]}; do
-	umount "$1$fs"
-    done
-    umount "$1/proc"
+
+    unset NV_BOOT_CONTROL
+    [ -z "$tmpconf" ] || rm -f "$tmpconf"
     return $rc
 }
 
