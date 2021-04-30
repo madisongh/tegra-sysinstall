@@ -131,7 +131,4 @@ else
 fi
 
 cleanup_and_exit
-if [ "$INITIAL_SETUP" = "yes" ]; then
-    echo "Installation complete.  Removing INSTALLER partition and rebooting..."
-    remove_installer_partition
-fi
+[ "$INITIAL_SETUP" != "yes" ] || remove_installer_partition
