@@ -443,37 +443,27 @@ secure_boot_enabled() {
 #
 update_bootloader() {
     local updlog=`mktemp /tmp/bup.log.XXXXXX`
-    local tmpconf
-    local fs rc d
-    local mounts=(/dev /sys /run /usr/bin /usr/lib /lib)
+    local fs rc
+    local mounts=(/dev /sys /run)
+    local options
 
     rc=0
-    if [ -e "$1/etc/nv_boot_control.template" ]; then
-	local boardspec=$(tegra-boardspec 2>/dev/null)
-	local devtype=$(cat "$1/usr/share/tegra-boot-tools/machine-name.conf")
-	tmpconf=$(mktemp /tmp/bootctrl.XXXXXX)
-	if [ -z "$boardspec" ]; then
-	    echo "ERR: cannot retrieve boardspec for nv_boot_control.conf generation" >&2
-	    return 1
-	fi
-	[ -n "$devtype" ] || devtype=$(cat "$1/etc/hostname")
-	if [ -z "$devtype" ]; then
-	    echo "ERR: cannot retrieve machine name for nv_boot_control.conf generation" >&2
-	    return 1
-	fi
-	sed -e"s,@TNSPEC@,${boardspec}-${devtype}-mmcblk0p1," $1/etc/nv_boot_control.template > "$tmpconf"
-	export NV_BOOT_CONTROL="$tmpconf"
-    elif [ -e "$1/etc/nv_boot_control.conf" ]; then
-	export NV_BOOT_CONTROL="$1/etc/nv_boot_control.conf"
-    fi
     if [ "$INITIAL_SETUP" = "yes" ]; then
-	tegra-bootloader-update --initialize "$1/opt/ota_package/bl_update_payload" || rc=1
-    else
-	tegra-bootloader-update "$1/opt/ota_package/bl_update_payload" || rc=1
+        options="--initialize"
     fi
-
-    unset NV_BOOT_CONTROL
-    [ -z "$tmpconf" ] || rm -f "$tmpconf"
+    mount -t proc proc "$1/proc"
+    for fs in ${mounts[@]}; do
+	mount --bind $fs "$1$fs"
+    done
+    if ! chroot "$1" /usr/bin/tegra-bootloader-update $options /opt/ota_package/bl_update_payload 2>&1 >"$updlog"; then
+	echo "ERR: bootloader update failed, log follows:" >&2
+	cat "$updlog" >&2
+	rc=1
+    fi
+    for fs in ${mounts[@]}; do
+	umount "$1$fs"
+    done
+    umount "$1/proc"
     return $rc
 }
 
