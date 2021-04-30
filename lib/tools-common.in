@@ -775,7 +775,7 @@ set_url() {
     local varname="$1"
     local value="$2"
     local default="$3"
-    local disposition="${4:required}"
+    local disposition="${4:-required}"
     local rc=0
 
     eval $varname=""
