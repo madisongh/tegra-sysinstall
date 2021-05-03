@@ -451,8 +451,8 @@ update_bootloader() {
         options="--initialize"
 	echo -n "Clearing boot device"
 	if [ -b "/dev/mtdblock0" ]; then
-	    echo -n " /dev/mtdblock0..."
-	    dd if=/dev/zero of=/dev/mtdblock0 bs=65536 count=512 >/dev/null 2>&1 || rc=1
+	    echo "Erasing SPI flash..."
+	    flash_erase /dev/mtd0 0 0 || rc=1
 	else
 	    if [ -b "/dev/mmcblk0boot0" ]; then
 		echo -n " /dev/mmcblk0boot0..."
@@ -464,20 +464,19 @@ update_bootloader() {
 		echo "0" > /sys/block/mmcblk0boot1/force_ro
 		dd if=/dev/zero of=/dev/mmcblk0boot0 bs=8192 count=512 >/dev/null 2>&1 || rc=1
 	    fi
+	    [ $rc -ne 0 ] || echo " [OK]"
 	fi
 	if [ $rc -ne 0 ]; then
 	    echo " [FAIL]"
 	    return $rc
 	fi
-	echo " [OK]"
     fi
     mount -t proc proc "$1/proc"
     for fs in ${mounts[@]}; do
 	mount --bind $fs "$1$fs"
     done
-    if ! chroot "$1" /usr/bin/tegra-bootloader-update $options /opt/ota_package/bl_update_payload 2>&1 >"$updlog"; then
-	echo "ERR: bootloader update failed, log follows:" >&2
-	cat "$updlog" >&2
+    if ! chroot "$1" /usr/bin/tegra-bootloader-update $options /opt/ota_package/bl_update_payload 2>&1 ; then
+	echo "ERR: bootloader update failed" >&2
 	rc=1
     fi
     for fs in ${mounts[@]}; do
