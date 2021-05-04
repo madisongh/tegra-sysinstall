@@ -3,10 +3,10 @@ dnl configure.ac - autoconf script for tegra-sysinstall
 dnl
 dnl Copyright (c) 2019-2021, Matthew Madison
 dnl
-AC_INIT([tegra-sysinstall], [1.5.2])
+AC_INIT([tegra-sysinstall], [1.5.3])
 AC_DEFINE([TEGRA_SYSINSTALL_VERSION_MAJOR], [1], [Major version])
 AC_DEFINE([TEGRA_SYSINSTALL_VERSION_MINOR], [5], [Minor version])
-AC_DEFINE([TEGRA_SYSINSTALL_VERSION_MAINT], [2], [Maintenance level])
+AC_DEFINE([TEGRA_SYSINSTALL_VERSION_MAINT], [3], [Maintenance level])
 AM_INIT_AUTOMAKE([subdir-objects foreign])
 AM_SILENT_RULES([yes])
 AC_COPYRIGHT([
