@@ -382,12 +382,6 @@ repartition_gpt_device() {
     fi
     sleep 1
     sgdisk "$1" --print
-    if ! partprobe "$1" > /dev/null 2>&1; then
-	echo "NOTE: partprobe reported error, retrying"
-	sleep 5
-	partprobe "$1" || return 1
-	echo "NOTE: re-probe succeeded"
-    fi
     return 0
 }
 
@@ -426,7 +420,10 @@ create_luks_partitions() {
 
 # reprobe_rootfsdev
 reprobe_rootfsdev() {
-    partprobe /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM >/dev/null 2>&1
+    if ! partprobe /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM >/dev/null 2>&1; then
+	sleep 1
+	partprobe /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM >/dev/null 2>&1
+    fi
     sleep 1
     blkid -p -s none /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM >/dev/null 2>&1
     sleep 1
@@ -548,6 +545,8 @@ initialize_devices() {
     if [ "$INSTALLTO" = "0 1" -a -s "@datadir@/tegra-sysinstall/partition_table" ]; then
 	echo "Re-partitioning the eMMC..."
 	repartition_gpt_device /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM "@datadir@/tegra-sysinstall/partition_table"
+	reprobe_rootfsdev
+	identify_platform_setup || return 1
     else
 	#
 	# Delete the extra partition created at flash time.
