@@ -701,6 +701,11 @@ remove_installer_partition() {
 # program_machine_id
 #
 program_machine_id() {
+    if ! secure_boot_enabled; then
+	echo "Secure boot not enabled; skipping machine ID setting" >&2
+	return 0
+    fi
+
     if tegra-fuse-tool -m >/dev/null 2>&1; then
 	return 0
     fi
