@@ -380,8 +380,14 @@ repartition_gpt_device() {
 	echo "ERR: partition table verificiation failed for $1" >&2
 	return 1
     fi
+    sleep 1
     sgdisk "$1" --print
-    partprobe "$1"
+    if ! partprobe "$1" > /dev/null 2>&1; then
+	echo "NOTE: partprobe reported error, retrying"
+	sleep 5
+	partprobe "$1" || return 1
+	echo "NOTE: re-probe succeeded"
+    fi
     return 0
 }
 
