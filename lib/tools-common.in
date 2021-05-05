@@ -434,8 +434,14 @@ reprobe_rootfsdev() {
 # returns 0 (success) if unit is secured,
 # returns 1 (fail) if not secured
 secure_boot_enabled() {
-    local odm_production_mode=`cat /sys/devices/platform/tegra-fuse/odm_production_mode`
+    local odm_production_mode=$(cat /sys/devices/platform/tegra-fuse/odm_production_mode)
     [ -n "$odm_production_mode" -a $(($odm_production_mode)) -ne 0 ] || return 1
+    # I have some Nanos that got bit by the NVIDIA fuse burning bug that locked
+    # them down with PKC disabled, handle that:
+    if [ -e /sys/devices/platform/tegra-fuse/pkc_disable ]; then
+	local pkc_disable=$(cat /sys/devices/platform/tegra-fuse/pkc_disable)
+	[ $(($pkc_disable)) -eq 0 ] || return 1
+    fi
     return 0
 }
 
@@ -764,11 +770,10 @@ install_machine_id() {
 	tr '[A-F]' '[a-f]' < "$midtmp" > "$mptemp/etc/machine-id"
 	chmod 644 "$mptemp/etc/machine-id"
     else
-	echo "ERR: could not retrieve machine ID from fuses" >&2
-	rm -f "$midtmp"
-	umount "$mptemp"
-	rmdir "$mptemp"
-	return 1
+	# No fused machine ID, just use the one generated here
+	rm -f "$mptemp/etc/machine-id"
+	cp /etc/machine-id "$mptemp/etc/machine-id"
+	chmod 644 "$mptemp/etc/machine-id"
     fi
     rm -f "$midtmp"
     umount "$mptemp"
