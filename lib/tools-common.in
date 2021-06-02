@@ -338,7 +338,7 @@ repartition_gpt_device() {
 	echo "ERR: $1 is not a block device" >&2
 	return 1
     fi
-    if ! sgdisk "$1" --disk-guid=R --zap-all >/dev/null 2>&1; then
+    if ! sgdisk "$1" -a @PARTALIGN@ --disk-guid=R --zap-all >/dev/null 2>&1; then
 	echo "ERR: could not zap partition table on $1" >&2
 	return 1
     fi
@@ -362,13 +362,13 @@ repartition_gpt_device() {
 	    guidarg="--partition-guid=$partnum:R"
 	fi
 	if [ "$size" = "REMAIN" ]; then
-	    if ! sgdisk "$1" -a 1 --largest-new=$partnum $typearg $guidarg -c "$partnum:$name" >/dev/null 2>&1; then
+	    if ! sgdisk "$1" -a @PARTALIGN@ --largest-new=$partnum $typearg $guidarg -c "$partnum:$name" >/dev/null 2>&1; then
 		echo "[FAIL]"
 		rm -f "$pftmp"
 		return 1
 	    fi
 	else
-	    if ! sgdisk "$1" -a 1 --new=$partnum:$startpos:+$size $typearg $guidarg -c "$partnum:$name" >/dev/null 2>&1; then
+	    if ! sgdisk "$1" -a @PARTALIGN@ --new=$partnum:$startpos:+$size $typearg $guidarg -c "$partnum:$name" >/dev/null 2>&1; then
 		echo "[FAIL]"
 		rm -f "$pftmp"
 		return 1
