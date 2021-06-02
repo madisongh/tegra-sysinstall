@@ -16,8 +16,7 @@ ROOTFSDEV[1]="$ROOTFSDEVTYPE$ROOTFSDEVNUM"
 UBOOT_ROOTFSDEVNUM="0"
 ROOTFSPART[0]="p1"
 UBOOT_ROOTFSPART[0]="1"
-# Rely on identify_platform_setup to set this
-ROOTFSPART[1]=
+ROOTFSPART[1]="p2"
 UBOOT_ROOTFSPART[1]="2"
 DATADEV="$ROOTFSDEVTYPE$ROOTFSDEVNUM"
 
@@ -98,12 +97,7 @@ identify_platform_setup() {
     fi
 
     if [ "$INITIAL_SETUP" = "yes" ]; then
-	# This handles the condition when APP_b partition is not present
-	if [ -z ${ROOTFSPART[1]} ]; then
-	    INSTALLTO="0"
-	else
-	    INSTALLTO="0 1"
-	fi
+	INSTALLTO="0 1"
     elif [ "$curslot" != "0" -a "$curslot" != "1" ]; then
 	echo "ERR: could not identify installation partition" >&2
 	exit 1
