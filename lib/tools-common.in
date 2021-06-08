@@ -485,7 +485,11 @@ update_bootloader() {
     for fs in ${mounts[@]}; do
 	mount --bind $fs "$1$fs"
     done
-    if ! chroot "$1" /usr/bin/tegra-bootloader-update $options /opt/ota_package/bl_update_payload 2>&1 ; then
+    local payload="bl_update_payload"
+    if [ "$INITIAL_SETUP" = "yes" -a -e "$1/opt/ota_package/full_init_payload" ]; then
+	payload="full_init_payload"
+    fi
+    if ! chroot "$1" /usr/bin/tegra-bootloader-update $options /opt/ota_package/$payload 2>&1 ; then
 	echo "ERR: bootloader update failed" >&2
 	rc=1
     fi
