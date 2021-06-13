@@ -94,7 +94,7 @@ identify_platform_setup() {
     done < <(lsblk -P -o MOUNTPOINT,NAME,PKNAME,PARTLABEL,TYPE)
 
     if [ "$INITIAL_SETUP" != "yes" -a -z "$found_rootfs" ]; then
-	INITIAL_SETUP=yes
+	[ -e "/run/bootdev/rootfs-device" ] || INITIAL_SETUP=yes
     fi
 
     if [ "$INITIAL_SETUP" = "yes" ]; then
