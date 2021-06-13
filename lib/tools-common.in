@@ -20,6 +20,8 @@ UBOOT_ROOTFSPART[0]="1"
 ROOTFSPART[1]="p2"
 UBOOT_ROOTFSPART[1]="2"
 DATADEV="$ROOTFSDEVTYPE$ROOTFSDEVNUM"
+rootfs_on_installer_partition=
+saved_machine_id=
 
 # identify_platform_setup
 #
@@ -69,6 +71,9 @@ identify_platform_setup() {
 	    continue
 	fi
 	if [ "$MOUNTPOINT" = "/" ]; then
+	    if [ "$PARTLABEL" = "INSTALLER" ]; then
+		rootfs_on_installer_partition="yes"
+	    fi
 	    found_rootfs=yes
 	fi
 	if [ "$PKNAME" = "$rootfsdev" -a -n "$PARTLABEL" ]; then
@@ -113,6 +118,16 @@ identify_platform_setup() {
 }
 
 identify_platform_setup
+
+# save_machine_id
+#
+#  Checks the Mender variable in U-Boot first; if not found,'
+#  checks the tegra-bootinfo variables
+#
+save_machine_id() {
+    saved_machine_id=$(fw_printenv -n mender_systemd_machine_id 2>/dev/null)
+    [ -n "$saved_machine_id" ] || saved_machine_id=$(tegra-bootinfo -n -v machine_id 2>/dev/null)
+}
 
 # copy_file <filename> <dest-dir> [var]
 #
@@ -553,26 +568,46 @@ initialize_devices() {
     local rootfsdev="/dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM"
     local part needprobe
 
-    if [ "$INSTALLTO" = "0 1" -a -s "@datadir@/tegra-sysinstall/partition_table" ]; then
-	echo "Re-partitioning the eMMC..."
-	repartition_gpt_device /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM "@datadir@/tegra-sysinstall/partition_table"
-	reprobe_rootfsdev
-	identify_platform_setup || return 1
-    else
-	#
-	# Delete the extra partition created at flash time.
-	#
-	if [ -n "${EMMC_PARTITIONS[unused]}" ]; then
-	    echo -n "Removing unused partition..."
-	    if ! sgdisk $rootfsdev --delete=${PARTINDEX[unused]} >/dev/null 2>&1; then
-		echo "[FAIL]"
-		echo "ERR: could not delete 'unused' partition" >&2
-		return 1
+    if [ "$INITIAL_SETUP" = "yes" ]; then
+	if [ "$DATAPART" != "TBD" ]; then
+	    local partdev="/dev/$DATADEV$DATAPART"
+	    local datatmp=$(mktemp -q -d /tmp/datasave.XXXXXX)
+	    if mount $partdev $datatmp >/dev/null 2>&1; then
+		echo -n "Saving data partition contents..."
+		if ! tar -C "$datatmp" --xattrs --xattrs-include="*" -c -z -f /tmp/${part}.tar.gz . 2>/dev/null; then
+		    echo "[FAILED]"
+		    umount "$datatmp"
+		    rm -f /tmp/${part}.tar.gz
+		    return 1
+		else
+		    echo "[OK]"
+		    umount "$datatmp"
+		fi
+		    rmdir "$datatmp"
 	    fi
-	    needprobe="yes"
-	    echo "[OK]"
 	fi
-	resize_gpt "$rootfsdev" needprobe || return 1
+	save_machine_id
+
+	if [ -s "@datadir@/tegra-sysinstall/partition_table" ]; then
+	    echo "Re-partitioning the eMMC..."
+	    repartition_gpt_device /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM "@datadir@/tegra-sysinstall/partition_table"
+	    needprobe="yes"
+	else
+	    #
+	    # Delete the extra partition created at flash time.
+	    #
+	    if [ -n "${EMMC_PARTITIONS[unused]}" ]; then
+		echo -n "Removing unused partition..."
+		if ! sgdisk $rootfsdev --delete=${PARTINDEX[unused]} >/dev/null 2>&1; then
+		    echo "[FAIL]"
+		    echo "ERR: could not delete 'unused' partition" >&2
+		    return 1
+		fi
+		needprobe="yes"
+		echo "[OK]"
+	    fi
+	    resize_gpt "$rootfsdev" needprobe || return 1
+	fi
 
 	if [ "$needprobe" = "yes" ]; then
 	    reprobe_rootfsdev
@@ -589,23 +624,6 @@ initialize_devices() {
     # In case the flash layout doesn't name these with the 'crypt-' prefix
     for part in APP APP_b DATA; do
 	if [ -z "${CRYPT_PARTITIONS[$part]}" -a -z "${EMMC_PARTITIONS[crypt-$part]}" ]; then
-	    if [ "$part" = "DATA" ]; then
-		local partdev="/dev/${EMMC_PARTITIONS[$part]}"
-		local datatmp=$(mktemp -q -d /tmp/datasave.XXXXXX)
-		if mount $partdev $datatmp >/dev/null 2>&1; then
-		    echo -n "Saving $part contents..."
-		    if ! tar -C "$datatmp" --xattrs --xattrs-include="*" -c -z -f /tmp/${part}.tar.gz . 2>/dev/null; then
-			echo "[FAILED]"
-			umount "$datatmp"
-			rm -f /tmp/${part}.tar.gz
-			return 1
-		    else
-			echo "[OK]"
-			umount "$datatmp"
-		    fi
-		    rmdir "$datatmp"
-		fi
-	    fi
 	    echo -n "Renaming $part to crypt-$part..."
 	    if sgdisk $rootfsdev --change-name=${PARTINDEX[$part]}:crypt-$part >/dev/null 2>&1; then
 		echo "[OK]"
@@ -702,87 +720,63 @@ unmount_storage_partitions() {
 #
 remove_installer_partition() {
     local rootfsdev="/dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM"
+    local extramsg
     if [ -z "${EMMC_PARTITIONS[INSTALLER]}" ]; then
 	return 0
     fi
-    echo "Removing INSTALLER partition and rebooting..."
+    if [ "$rootfs_on_installer_partition" = "yes" ]; then
+	extramsg=" and rebooting"
+    fi
+    echo "Removing INSTALLER partition${extramsg}..."
     if ! sgdisk $rootfsdev --delete=${PARTINDEX[INSTALLER]} >/dev/null 2>&1; then
 	echo "ERR: could not delete INSTALLER partition" >&2
 	return 0
     fi
     # Use reboot -f since we've just blown away our running rootfs
-    reboot -f
+    [ "$rootfs_on_installer_partition" != "yes" ] || reboot -f
 }
 
 # program_machine_id
 #
 program_machine_id() {
-    if ! secure_boot_enabled; then
-	echo "Secure boot not enabled; skipping machine ID setting" >&2
+    if secure_boot_enabled && tegra-fuse-tool -m >/dev/null 2>&1; then
 	return 0
     fi
 
-    if tegra-fuse-tool -m >/dev/null 2>&1; then
-	return 0
-    fi
-    local midtmp=`mktemp -q -d /tmp/machid.XXXXXX`
-    mkdir "$midtmp/etc"
-    if ! systemd-machine-id-setup --root="$midtmp" > /dev/null 2>&1; then
-	echo "ERR: could not generate machine ID" >&2
-	rm -rf "$midtmp"
-	return 1
-    fi
-    local machid=`cat "$midtmp/etc/machine-id"`
-    rm -rf "$midtmp"
-    if ! tegra-fuse-tool -M "$machid"; then
-	echo "ERR: could not program machine ID into fuses" >&2
-	return 1
-    fi
-    local cmpid=`tegra-fuse-tool -m 2>/dev/null`
-    if [ "${cmpid^^}" != "${machid^^}" ]; then
-	echo "ERR: fuse mismatch with generated machine ID" >&2
-	return 1
-    fi
-    echo "Machine ID programmed: $cmpid"
-    return 0
-}
-
-# install_machine_id <root>
-#
-# Install our fuse-programmed machine ID
-# as systemd's /etc/machine-id in a just-installed
-# rootfs.
-#
-install_machine_id() {
-    local mptemp=`mktemp -q -d /tmp/mid-rootfs.XXXXXX`
-    local midtmp=`mktemp -q  /tmp/mid.XXXXXX`
-    # Skip this if the machine ID is being passed through from
-    # the bootloader
-    if cat /proc/cmdline | grep -q 'systemd\.machine_id='; then
-	return 0
-    fi
-    mount "$1" "$mptemp" || return 1
-    if tegra-fuse-tool -m > "$midtmp" 2>/dev/null; then
-	if [ -e "$mptemp/etc/machine-id" ]; then
-	    if ! rm "$mptemp/etc/machine-id"; then
-		echo "ERR: could not replace $mptemp/etc/machine-id" >&2
-		rm "$midtmp"
-		umount "$mptemp"
-		rmdir "$mptemp"
-		return 1
-	    fi
+    local machid="$saved_machine_id"
+    if [ -z "$machid" ]; then
+	local midtmp=`mktemp -q -d /tmp/machid.XXXXXX`
+	mkdir "$midtmp/etc"
+	if ! systemd-machine-id-setup --root="$midtmp" > /dev/null 2>&1; then
+	    echo "ERR: could not generate machine ID" >&2
+	    rm -rf "$midtmp"
+	    return 1
 	fi
-	tr '[A-F]' '[a-f]' < "$midtmp" > "$mptemp/etc/machine-id"
-	chmod 644 "$mptemp/etc/machine-id"
-    else
-	# No fused machine ID, just use the one generated here
-	rm -f "$mptemp/etc/machine-id"
-	cp /etc/machine-id "$mptemp/etc/machine-id"
-	chmod 644 "$mptemp/etc/machine-id"
+	machid=`cat "$midtmp/etc/machine-id"`
+	rm -rf "$midtmp"
     fi
-    rm -f "$midtmp"
-    umount "$mptemp"
-    rmdir "$mptemp"
+
+    if secure_boot_enabled; then
+	if ! tegra-fuse-tool -M "$machid"; then
+	    echo "ERR: could not program machine ID into fuses" >&2
+	    return 1
+	fi
+	local cmpid=`tegra-fuse-tool -m 2>/dev/null`
+	if [ "${cmpid^^}" != "${machid^^}" ]; then
+	    echo "ERR: fuse mismatch with generated machine ID" >&2
+	    return 1
+	fi
+	echo "Machine ID programmed: $cmpid"
+	return 0
+    fi
+    if type fw_printenv 2>/dev/null; then
+	fw_setenv mender_systemd_machine_id "$machid"
+	echo "Saved machine ID to U-Boot environment"
+    fi
+    if type tegra-bootinfo 2>/dev/null; then
+	tegra-bootinfo -V machine_id "$machid"
+	echo "Saved machine ID to tegra-bootinfo variables"
+    fi
     return 0
 }
 
