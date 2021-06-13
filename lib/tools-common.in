@@ -401,6 +401,31 @@ repartition_gpt_device() {
     return 0
 }
 
+# encrypt_one_partition
+#
+# Called on by create_luks_partitions in a subprocess
+# so we can parallelize the partition encryption steps.
+#
+encrypt_one_partition() {
+    local ppdir="$1"
+    local luksdev="$2"
+    local name="$3"
+    local realname="$4"
+    echo "Encrypting $luksdev($name)..."
+    if ! cat "$ppdir/passphrase" | cryptsetup --type luks --cipher aes-xts-plain64 --hash sha256 \
+					      --use-random --key-file - luksFormat $luksdev >/dev/null 2>&1; then
+	echo "[FAIL $luksdev($name)]"
+	return 1
+    fi
+    # now 'open' it
+    if ! cryptsetup luksOpen --key-file "$ppdir/passphrase" $luksdev $realname 2>/dev/null; then
+	echo "[$luksdev($name) FAIL]"
+	return 1
+    fi
+    echo "[$luksdev($name) OK]"
+    return 0
+}
+
 # create_luks_partitions
 #
 # Creates encrypted containers on any partitions whose labels are
@@ -412,25 +437,17 @@ create_luks_partitions() {
     local pftmp=`mktemp -q`
     local name size type guid file startpos realname luksdev
     grep -v '^[[:space:]]*#' "$2" >$pftmp
+    local pids=
     while IFS=, read name size type guid file startpos; do
 	[ "${name:0:6}" = "crypt-" ] || continue
 	realname="${name:6}"
 	[ ! -b /dev/mapper/$realname ] || cryptsetup luksClose /dev/mapper/$realname
 	luksdev=`blkid -t PARTLABEL=$name | awk -F: '{print $1}'`
-	echo -n "Encrypting $luksdev($name)..."
 	[ -n "$realname" -a -n "$luksdev" -a -b "$luksdev" ] || continue
-	if ! cat "$ppdir/passphrase" | cryptsetup --type luks --cipher aes-xts-plain64 --hash sha256 \
-						  --use-random --key-file - luksFormat $luksdev >/dev/null 2>&1; then
-	    echo "[FAIL]"
-	    return 1
-	fi
-	# now 'open' it
-	if ! cryptsetup luksOpen --key-file "$ppdir/passphrase" $luksdev $realname 2>/dev/null; then
-	    echo "[FAIL]"
-	    return 1
-	fi
-	echo "[OK]"
+	encrypt_one_partition "$ppdir" "$luksdev" "$name" "$realname" &
+	pids="$pids $!"
     done < "$pftmp"
+    wait $pids || return 1
     return 0
 }
 
@@ -472,41 +489,48 @@ update_bootloader() {
     local options
 
     rc=0
-    if [ "$INITIAL_SETUP" = "yes" ]; then
-        options="--initialize"
-	echo -n "Clearing boot device"
-	if [ -b "/dev/mtdblock0" ]; then
-	    echo "Erasing SPI flash..."
-	    flash_erase /dev/mtd0 0 0 || rc=1
-	else
-	    if [ -b "/dev/mmcblk0boot0" ]; then
-		echo -n " /dev/mmcblk0boot0..."
-		echo "0" > /sys/block/mmcblk0boot0/force_ro
-		dd if=/dev/zero of=/dev/mmcblk0boot0 bs=8192 count=512 >/dev/null 2>&1 || rc=1
-	    fi
-	    if [ -b "/dev/mmcblk0boot1" ]; then
-		echo -n " /dev/mmcblk0boot1..."
-		echo "0" > /sys/block/mmcblk0boot1/force_ro
-		dd if=/dev/zero of=/dev/mmcblk0boot0 bs=8192 count=512 >/dev/null 2>&1 || rc=1
-	    fi
-	    [ $rc -ne 0 ] || echo " [OK]"
-	fi
-	if [ $rc -ne 0 ]; then
-	    echo " [FAIL]"
-	    return $rc
-	fi
-    fi
     mount -t proc proc "$1/proc"
     for fs in ${mounts[@]}; do
 	mount --bind $fs "$1$fs"
     done
-    local payload="bl_update_payload"
-    if [ "$INITIAL_SETUP" = "yes" -a -e "$1/opt/ota_package/full_init_payload" ]; then
-	payload="full_init_payload"
+    if [ "$INITIAL_SETUP" = "yes" ]; then
+        options="--initialize"
+	chroot "$1" /usr/bin/tegra-bootloader-update --needs-repartition
+	rc=$?
+	# needs-repartition check returns 0=yes, 1=no, 2=error
+	if [ $rc -eq 1 ]; then
+	    echo "Boot device does not need repartitioning"
+	    rc=0
+	elif [ $rc -eq 0 ]; then
+	    echo -n "Clearing boot device"
+	    if [ -b "/dev/mtdblock0" ]; then
+		flash_erase /dev/mtd0 0 0 || rc=1
+	    else
+		if [ -b "/dev/mmcblk0boot0" ]; then
+		    echo -n " /dev/mmcblk0boot0..."
+		    echo "0" > /sys/block/mmcblk0boot0/force_ro
+		    dd if=/dev/zero of=/dev/mmcblk0boot0 bs=8192 count=512 >/dev/null 2>&1 || rc=1
+		fi
+		if [ -b "/dev/mmcblk0boot1" ]; then
+		    echo -n " /dev/mmcblk0boot1..."
+		    echo "0" > /sys/block/mmcblk0boot1/force_ro
+		    dd if=/dev/zero of=/dev/mmcblk0boot0 bs=8192 count=512 >/dev/null 2>&1 || rc=1
+		fi
+		[ $rc -eq 0 ] && echo " [OK]" || echo " [FAIL]"
+	    fi
+	else
+	    echo "ERR: failed boot device repartitioning check" >&2
+	fi
     fi
-    if ! chroot "$1" /usr/bin/tegra-bootloader-update $options /opt/ota_package/$payload 2>&1 ; then
-	echo "ERR: bootloader update failed" >&2
-	rc=1
+    if [ $rc -eq 0 ]; then
+	local payload="bl_update_payload"
+	if [ "$INITIAL_SETUP" = "yes" -a -e "$1/opt/ota_package/full_init_payload" ]; then
+	    payload="full_init_payload"
+	fi
+	if ! chroot "$1" /usr/bin/tegra-bootloader-update $options /opt/ota_package/$payload 2>&1 ; then
+	    echo "ERR: bootloader update failed" >&2
+	    rc=1
+	fi
     fi
     for fs in ${mounts[@]}; do
 	umount "$1$fs"
@@ -559,7 +583,7 @@ make_fake_parttable() {
 # is generated from the flash layout XML file.
 #
 # IMPORTANT: on some of the Jetson devices, you must specify
-# 16896 as the size of the primary GPT in your flash layout
+# 16896 (or larger) as the size of the primary GPT in your flash layout
 # in order for the NVIDIA bootloaders to be compatible with
 # the full-size GPT created by the Linux-based tools. Otherwise,
 # the target will be unbootable.
@@ -586,6 +610,7 @@ initialize_devices() {
 		    rmdir "$datatmp"
 	    fi
 	fi
+
 	save_machine_id
 
 	if [ -s "@datadir@/tegra-sysinstall/partition_table" ]; then
@@ -824,4 +849,35 @@ set_url() {
     fi
     eval $varname="$value"
     return 0
+}
+
+# copy_installer_files
+#
+# Helper for a tegraflash package that includes the
+# installer in an initramfs and has the tarballs
+# loaded into the APP/crypt-APP partition.
+#
+# Only called on if the rootfs tarball URL begins
+# with 'file:///installer' and the '/installer'
+# directory is present in the current rootfs.
+#
+copy_installer_files() {
+    local appartname="APP"
+    local rc=0
+    if [ -z "${EMMC_PARTITIONS[APP]}" -a -n "${EMMC_PARTITIONS[crypt-APP]}" ]; then
+	appartname="crypt-APP"
+    fi
+    local tmpmnt=$(mktemp -q -d /tmp/instcopy.XXXXXX)
+    if mount /dev/disk/by-partlabel/$appartname $tmpmnt > /dev/null 2>&1; then
+	if [ -d "$tmpmnt/installer" ]; then
+	    cp -v "$tmpmnt/installer/"* /installer/ || rc=1
+	else
+	    echo "No /installer directory on $appartname partition" >&2
+	fi
+	umount "$tmpmnt"
+    else
+	echo "No APP partition found for pre-loading installer files" >&2
+    fi
+    rmdir "$tmpmnt" || rc=1
+    return $rc
 }

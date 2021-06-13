@@ -70,8 +70,17 @@ while true; do
     esac
 done
 
-set_url URL "$1" "file:///installer/image.tar.gz" || exit 1
-set_url DATA_URL "$2" "file:///installer/data.tar.gz" optional || exit 1
+default_url="file:///installer/image.tar.gz"
+default_data_url="file:///installer/data.tar.gz"
+
+if [ "$INITIAL_SETUP" = "yes" -a -d "/installer" ]; then
+    if [ -z "$1" ] || echo "$1" | grep -q '^file:///installer/' && [ -d "/installer" ]; then
+	copy_installer_files || exit 1
+    fi
+fi
+
+set_url URL "$1" "$default_url"  || exit 1
+set_url DATA_URL "$2" "$default_data_url" optional || exit 1
 
 verify_device_availability || exit 1
 
@@ -95,20 +104,21 @@ fi
 package_preinstall || cleanup_and_exit 1
 
 if [ -n "$DATA_TARBALL" ]; then
-    echo "Populating /data from $DATA_TARBALL..."
+    echo "Updating /data from $DATA_TARBALL..."
     update_datapart /data "$INSTDIR/$DATA_TARBALL" || cleanup_and_exit 1
 fi
 
 INSTALLED_ARTIFACT=
 first_targetdev=
+pids=
 for i in $INSTALLTO; do
     targetdev="/dev/${ROOTFSDEV[$i]}${ROOTFSPART[$i]}"
     echo "Installing rootfs to $targetdev..."
-    install_rootfs "$targetdev" $i $INSTDIR/$ROOTFS_TARBALL || cleanup_and_exit 1
-    install_machine_id "$targetdev" || cleanup_and_exit 1
-    sync && e2fsck -p "$targetdev" || cleanup_and_exit 1
+    install_rootfs "$targetdev" $i $INSTDIR/$ROOTFS_TARBALL && sync && e2fsck -p "$targetdev" &
+    pids="$pids $!"
     [ -n "$first_targetdev" ] || first_targetdev="$targetdev"
 done
+wait $pids || cleanup_and_exit 1
 
 if [ "$BOOTLOADER_UPDATES_SUPPORTED" = "yes" -a -n "$first_targetdev" ]; then
     rmount=$(mktemp -q -d /tmp/finalstaging.root.XXXXXX)
