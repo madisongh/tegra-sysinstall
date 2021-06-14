@@ -390,7 +390,7 @@ partition_available() {
 # Re-partitions a GPT disk
 repartition_gpt_device() {
     local pftmp=`mktemp -q`
-    local name size type guid file startpos partnum typearg
+    local name size type guid file startpos partnum typearg guidarg
     if [ ! -b "$1" ]; then
 	echo "ERR: $1 is not a block device" >&2
 	return 1
@@ -415,7 +415,7 @@ repartition_gpt_device() {
 	else
 	    typearg="--typecode=$partnum:0700"
 	fi
-	if [ -n "guid" ]; then
+	if [ -n "$guid" ]; then
 	    guidarg="--partition-guid=$partnum:$guid"
 	else
 	    guidarg="--partition-guid=$partnum:R"
