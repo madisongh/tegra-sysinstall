@@ -391,21 +391,22 @@ partition_available() {
 repartition_gpt_device() {
     local pftmp=`mktemp -q`
     local name size type guid file startpos partnum typearg
-    echo "Re-partitioning device $1"
     if [ ! -b "$1" ]; then
 	echo "ERR: $1 is not a block device" >&2
 	return 1
     fi
+    echo -n "Re-partitioning device $1..."
     if ! sgdisk "$1" -a @PARTALIGN@ --disk-guid=R --zap-all >/dev/null 2>&1; then
+	echo " [FAIL]"
 	echo "ERR: could not zap partition table on $1" >&2
 	return 1
     fi
     egrep -v '^[[:space:]]*#' "$2" >$pftmp
+    local sgdiskargs="-a @PARTALIGN@"
     while IFS=, read partnum name size type guid file startpos; do
 	if [ -z "partnum" -o -z "$name" -o -z "$size" ]; then
 	    continue
 	fi
-	echo -n " -- creating partition $partnum ($name)... "
 	if [ -z "$startpos" ]; then
 	    startpos=0
 	fi
@@ -420,23 +421,24 @@ repartition_gpt_device() {
 	    guidarg="--partition-guid=$partnum:R"
 	fi
 	if [ "$size" = "REMAIN" ]; then
-	    if ! sgdisk "$1" -a @PARTALIGN@ --largest-new=$partnum $typearg $guidarg -c "$partnum:$name" >/dev/null 2>&1; then
-		echo "[FAIL]"
-		rm -f "$pftmp"
-		return 1
-	    fi
+	    sgdiskargs="${sgdiskargs} --largest-new=$partnum $typearg $guidarg -c $partnum:$name"
 	else
-	    if ! sgdisk "$1" -a @PARTALIGN@ --new=$partnum:$startpos:+$size $typearg $guidarg -c "$partnum:$name" >/dev/null 2>&1; then
-		echo "[FAIL]"
-		rm -f "$pftmp"
-		return 1
-	    fi
+	    sgdiskargs="${sgdiskargs} --new=$partnum:$startpos:+$size $typearg $guidarg -c $partnum:$name"
 	fi
-	echo "[OK]"
     done < "$pftmp"
     rm -f "$pftmp"
+    local sgdisklog=$(mktemp -q)
+    if ! sgdisk "$1" $sgdiskargs  >"$sgdisklog" 2>&1; then
+	echo " [FAIL]"
+	cat "$sgdisklog" >&2
+	rm -f "$sgdisklog"
+	return 1
+    fi
+    rm -f "$sgdisklog"
+    echo " [OK]"
+
     if ! sgdisk "$1" --verify >/dev/null 2>&1; then
-	echo "ERR: partition table verificiation failed for $1" >&2
+	echo "ERR: partition table verification failed for $1" >&2
 	return 1
     fi
     sleep 1
