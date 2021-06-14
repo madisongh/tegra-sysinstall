@@ -121,12 +121,55 @@ identify_platform_setup
 
 # save_machine_id
 #
-#  Checks the Mender variable in U-Boot first; if not found,'
-#  checks the tegra-bootinfo variables
+#  Checks the Mender variable in U-Boot first; if not found,
+#  checks the tegra-bootinfo variables; if still not found,
+#  extracts from /etc/machine-id on the APP partition rootfs,
+#  if present.
 #
 save_machine_id() {
     saved_machine_id=$(fw_printenv -n mender_systemd_machine_id 2>/dev/null)
     [ -n "$saved_machine_id" ] || saved_machine_id=$(tegra-bootinfo -n -v machine_id 2>/dev/null)
+    if [ -z "$saved_machine_id" -a -n "${EMMC_PARTITIONS[APP]}" ]; then
+	local tmpmnt=$(mktemp -q -d /tmp/saveid.XXXXXX)
+	if mount "/dev/${EMMC_PARTITIONS[APP]}" "$tmpmnt" > /dev/null 2>&1; then
+	    if [ -f "$tmpmnt/etc/machine-id" ]; then
+		saved_machine_id=$(cat "$tmpmnt/etc/machine-id" 2>/dev/null)
+	    fi
+	    umount "$tmpmnt"
+	fi
+	rmdir "$tmpmnt"
+    fi
+}
+
+# set_machine_id_var
+#
+# Sets Mender variable in U-boot and/or tegra-bootinfo variable
+# for with the machine ID passed in, or the saved machine ID.
+set_machine_id_var() {
+    local machid="${1:-$saved_machine_id}"
+    local path tbinfo fw_setenv
+
+    [ -n "$machid" ] || return 0
+
+    for path in bin sbin usr/bin usr/sbin; do
+	if [ -e "$1$path/fw_setenv" ]; then
+	    fw_setenv="$path/fw_setenv"
+	    break
+	fi
+    done
+    if [ -n "$fw_setenv" ] && chroot $1 "$fw_setenv" mender_systemd_machine_id "$machid"; then
+	echo "Saved machine ID to U-Boot environment"
+    fi
+    for path in bin sbin usr/bin usr/sbin; do
+	if [ -e "$1$path/tegra-bootinfo" ]; then
+	    tbinfo="$path/tegra-bootinfo"
+	    break
+	fi
+    done
+    if [ -n "$tbinfo" ] && chroot $1 "$tbinfo" -V machine_id "$machid"; then
+	echo "Saved machine ID to tegra-bootinfo variables"
+    fi
+    return 0
 }
 
 # copy_file <filename> <dest-dir> [var]
@@ -532,10 +575,29 @@ update_bootloader() {
 	    rc=1
 	fi
     fi
+
+    if [ $rc -eq 0 -a "$INITIAL_SETUP" = "yes" ]; then
+	# This happens here because storage for boot variables
+	# is likely to be in the boot device, which may have been wiped
+	if type tegra-bootinfo 2>&1 >/dev/null; then
+	    echo -n "Initializing bootinfo area..."
+	    if tegra-bootinfo --initialize --force-initialize; then
+		echo " [OK]"
+	    else
+		echo " [FAIL]"
+		rc=1
+	    fi
+	fi
+	if [ $rc -eq 0 ] && ! secure_boot_enabled; then
+	    set_machine_id_var "$1" || rc=1
+	fi
+    fi
+
     for fs in ${mounts[@]}; do
 	umount "$1$fs"
     done
     umount "$1/proc"
+
     return $rc
 }
 
@@ -615,7 +677,7 @@ initialize_devices() {
 
 	if [ -s "@datadir@/tegra-sysinstall/partition_table" ]; then
 	    echo "Re-partitioning the eMMC..."
-	    repartition_gpt_device /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM "@datadir@/tegra-sysinstall/partition_table"
+	    repartition_gpt_device /dev/$ROOTFSDEVTYPE$ROOTFSDEVNUM "@datadir@/tegra-sysinstall/partition_table" || return 1
 	    needprobe="yes"
 	else
 	    #
@@ -764,7 +826,7 @@ remove_installer_partition() {
 # program_machine_id
 #
 program_machine_id() {
-    if secure_boot_enabled && tegra-fuse-tool -m >/dev/null 2>&1; then
+    if ! secure_boot_enabled || tegra-fuse-tool -m >/dev/null 2>&1; then
 	return 0
     fi
 
@@ -781,27 +843,16 @@ program_machine_id() {
 	rm -rf "$midtmp"
     fi
 
-    if secure_boot_enabled; then
-	if ! tegra-fuse-tool -M "$machid"; then
-	    echo "ERR: could not program machine ID into fuses" >&2
-	    return 1
-	fi
-	local cmpid=`tegra-fuse-tool -m 2>/dev/null`
-	if [ "${cmpid^^}" != "${machid^^}" ]; then
-	    echo "ERR: fuse mismatch with generated machine ID" >&2
-	    return 1
-	fi
-	echo "Machine ID programmed: $cmpid"
-	return 0
+    if ! tegra-fuse-tool -M "$machid"; then
+	echo "ERR: could not program machine ID into fuses" >&2
+	return 1
     fi
-    if type fw_printenv 2>/dev/null; then
-	fw_setenv mender_systemd_machine_id "$machid"
-	echo "Saved machine ID to U-Boot environment"
+    local cmpid=`tegra-fuse-tool -m 2>/dev/null`
+    if [ "${cmpid^^}" != "${machid^^}" ]; then
+	echo "ERR: fuse mismatch with generated machine ID" >&2
+	return 1
     fi
-    if type tegra-bootinfo 2>/dev/null; then
-	tegra-bootinfo -V machine_id "$machid"
-	echo "Saved machine ID to tegra-bootinfo variables"
-    fi
+    echo "Machine ID programmed: $cmpid"
     return 0
 }
 
