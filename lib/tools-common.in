@@ -657,22 +657,22 @@ initialize_devices() {
     local part needprobe
 
     if [ "$INITIAL_SETUP" = "yes" ]; then
-	if [ "$DATAPART" != "TBD" ]; then
-	    local partdev="/dev/$DATADEV$DATAPART"
-	    local datatmp=$(mktemp -q -d /tmp/datasave.XXXXXX)
-	    if mount $partdev $datatmp >/dev/null 2>&1; then
+	if [ "$DATAPART" != "TBD" -a -z "$DATA_URL"]; then
+		local partdev="/dev/$DATADEV$DATAPART"
+		local datatmp=$(mktemp -q -d /tmp/datasave.XXXXXX)
+		if mount $partdev $datatmp >/dev/null 2>&1; then
 		echo -n "Saving data partition contents..."
 		if ! tar -C "$datatmp" --xattrs --xattrs-include="*" -c -z -f /tmp/${part}.tar.gz . 2>/dev/null; then
-		    echo "[FAILED]"
-		    umount "$datatmp"
-		    rm -f /tmp/${part}.tar.gz
-		    return 1
+			echo "[FAILED]"
+			umount "$datatmp"
+			rm -f /tmp/${part}.tar.gz
+			return 1
 		else
-		    echo "[OK]"
-		    umount "$datatmp"
+			echo "[OK]"
+			umount "$datatmp"
 		fi
-		    rmdir "$datatmp"
-	    fi
+			rmdir "$datatmp"
+		fi
 	fi
 
 	save_machine_id
