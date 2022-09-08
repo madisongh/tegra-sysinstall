@@ -733,7 +733,7 @@ initialize_devices() {
     local fakept=`mktemp -q`
     if make_fake_parttable $fakept; then
 	local ppdir=`mktemp -q -d /run/setup-pp.XXXXXX`
-	keystoretool -p > $ppdir/passphrase
+	@KEY_RETRIEVAL_CMD@ > $ppdir/passphrase
 	if ! create_luks_partitions $ppdir $fakept; then
 	    rm -rf $ppdir
 	    return 1
