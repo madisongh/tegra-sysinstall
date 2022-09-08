@@ -26,5 +26,11 @@ AC_ARG_WITH([partition-alignment],
 	[], [with_partition_alignment=1])
 AC_SUBST([PARTALIGN], [$with_partition_alignment])
 
+AC_ARG_WITH([key-retrieval-command],
+	AS_HELP_STRING([--with-key-retrieval-command=CMD],
+	[command to retrieve key which is used as LUKS passphrase @<:@default="keystoretool -p"@:>@]),
+	[], [with_key_retrieval_command="keystoretool -p"])
+AC_SUBST([KEY_RETRIEVAL_CMD], [$with_key_retrieval_command])
+
 AC_CONFIG_FILES(Makefile src/tegra-sysinstall src/tegra-sysinstall-menu lib/tools-common lib/menu-common)
 AC_OUTPUT
